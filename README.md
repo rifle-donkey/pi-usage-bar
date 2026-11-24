@@ -1,4 +1,4 @@
-# pi-usage-bar
+# @rifle-donkey/pi-usage-bar
 
 A Pi extension that shows your subscription usage in the top border of the input box.
 
@@ -9,7 +9,7 @@ A Pi extension that shows your subscription usage in the top border of the input
 ## Install
 
 ```bash
-pi install npm:pi-usage-bar
+pi install npm:@rifle-donkey/pi-usage-bar
 ```
 
 ## Behavior

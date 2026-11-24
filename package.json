@@ -1,5 +1,5 @@
 {
-  "name": "pi-usage-bar",
+  "name": "@rifle-donkey/pi-usage-bar",
   "version": "0.1.0",
   "description": "Shows Anthropic and OpenAI Codex subscription usage in the Pi input box border.",
   "type": "module",

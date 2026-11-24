@@ -3,7 +3,7 @@
 Model profile: private
 GitHub account: rifle-donkey
 
-`pi-usage-bar` is a Pi extension that shows Anthropic and OpenAI Codex subscription usage in the input box's top border. User-facing behavior is in [README.md](README.md).
+`@rifle-donkey/pi-usage-bar` is a Pi extension that shows Anthropic and OpenAI Codex subscription usage in the input box's top border. User-facing behavior is in [README.md](README.md).
 
 ## Layout
 
