@@ -1,0 +1,19 @@
+{
+  "name": "pi-usage-bar",
+  "version": "0.1.0",
+  "description": "Shows Anthropic and OpenAI Codex subscription usage in the Pi input box border.",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/rifle-donkey/pi-usage-bar.git" },
+  "engines": { "node": ">=22.18.0" },
+  "files": ["extensions/usage-bar.ts", "src/usage.ts", "README.md", "CHANGELOG.md", "LICENSE"],
+  "publishConfig": { "access": "public" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-tui": "*" },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true }
+  },
+  "keywords": ["pi-package"],
+  "scripts": { "test": "node --test tests/" },
+  "pi": { "extensions": ["./extensions/usage-bar.ts"] }
+}
