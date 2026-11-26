@@ -298,7 +298,10 @@ export default function usageStatus(pi: ExtensionAPI): void {
 				return;
 			}
 		}
-		const check = { due: due || !!cursorCheck?.due, force: force || !!cursorCheck?.force };
+		const check = {
+			due: due || !!cursorCheck?.due,
+			force: force || !!cursorCheck?.force || !!entry.discarded,
+		};
 		cursorCheck = check;
 		const live = liveness("cursor", false);
 		let token: string | undefined;
@@ -315,6 +318,8 @@ export default function usageStatus(pi: ExtensionAPI): void {
 		const wasAllowed = cursorAllowed;
 		if (lookupFailed) {
 			// A failed lookup cannot confirm the login, but it does not prove a change.
+			// Keep any cooldown bypass pending until the login can be checked.
+			if (check.force) entry.discarded = true;
 			cursorAllowed = false;
 			if (hadValue && wasAllowed) requestRender?.();
 			return;
@@ -336,6 +341,7 @@ export default function usageStatus(pi: ExtensionAPI): void {
 			requestRender?.();
 		}
 		if (!token || (!check.due && !check.force)) return;
+		entry.discarded = false;
 		await refresh(ctx, "cursor", { force: check.force, cursorToken: token });
 	}
 

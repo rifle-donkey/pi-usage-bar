@@ -88,6 +88,80 @@ test('N1 Cursor hides cached usage on a thrown lookup and restores it without an
   });
 });
 
+test('F2 Cursor retries a discarded refresh after a thrown reactivation lookup', async t => {
+  await host(t, {}, async s => {
+    s.fetch = async () => json(cursor(12));
+    await s.start();
+    await s.waitBorder(/cursor 12%/);
+
+    const discarded = Promise.withResolvers(), fresh = Promise.withResolvers();
+    try {
+      // Start a request inside the cooldown so reactivation needs the B3 bypass.
+      s.fetch = () => discarded.promise;
+      await s.start();
+      await until(() => s.requests.length === 2, 'second session did not start a forced refresh');
+      await s.select('unknown');
+      assert.equal(s.requests[1].opts.signal.aborted, true);
+      discarded.resolve(json(cursor(91)));
+      await settle();
+
+      s.auth = async () => { throw new Error('synthetic lookup failure'); };
+      const lookups = s.lookups.length;
+      await s.select('cursor');
+      await settle();
+      assert.equal(s.lookups.length, lookups + 1);
+      assert.equal(s.requests.length, 2, 'failed activation lookup sent a request');
+      assert.equal(s.border(), blank());
+
+      s.auth = async () => oauth();
+      s.fetch = () => fresh.promise;
+      s.tick(MIN);
+      await settle();
+      assert.equal(s.requests.length, 3, 'recovery tick lost the B3 refresh');
+      assert.match(s.border(), /cursor 12%/, 'failed lookup cleared the cached value');
+      fresh.resolve(json(cursor(31)));
+      await s.waitBorder(/cursor 31%/);
+
+      await s.select('unknown');
+      await s.select('cursor');
+      await settle();
+      assert.equal(s.requests.length, 3, 'B3 bypass was used more than once');
+    } finally { discarded.resolve(json(cursor())); fresh.resolve(json(cursor())); }
+  });
+});
+
+for (const failures of [1, 3]) {
+  test(`F2 Cursor retries the session-start refresh after ${failures} failed auth lookup(s)`, async t => {
+    await host(t, {}, async s => {
+      s.fetch = async () => json(cursor(12));
+      await s.start();
+      await s.waitBorder(/cursor 12%/);
+
+      // With a recent cached value, recovery ticks cannot rely on the idle refresh period.
+      const lookups = s.lookups.length;
+      s.auth = async () => { throw new Error('synthetic lookup failure'); };
+      await s.start();
+      for (let i = 0; i < failures; i++) {
+        if (i > 0) s.tick(MIN);
+        await settle();
+        assert.equal(s.lookups.length, lookups + i + 1);
+        assert.equal(s.requests.length, 1, 'failed lookup sent a request');
+        assert.equal(s.border(), blank());
+      }
+
+      s.auth = async () => oauth();
+      s.fetch = async () => json(cursor(42));
+      s.tick(MIN);
+      await settle();
+      assert.equal(s.requests.length, 2, 'recovery tick lost the session-start refresh');
+      assert.match(s.border(), /cursor 42%/);
+      s.tick(MIN);
+      await settle();
+      assert.equal(s.requests.length, 2, 'recovery forced a duplicate refresh');
+    });
+  });
+}
+
 function stubUsage(s, provider, reply) {
   if (provider === COPILOT) {
     s.exec = async ({ endpoint }) => endpoint === QUOTA ? reply() : ok(s.login);
