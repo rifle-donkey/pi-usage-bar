@@ -1,12 +1,12 @@
 {
   "name": "@rifle-donkey/pi-usage-bar",
-  "version": "0.1.0",
-  "description": "Shows Anthropic and OpenAI Codex subscription usage in the Pi input box border.",
+  "version": "0.2.0",
+  "description": "Shows Anthropic, OpenAI Codex, GitHub Copilot and Cursor subscription usage in the Pi input box border.",
   "type": "module",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/rifle-donkey/pi-usage-bar.git" },
   "engines": { "node": ">=22.18.0" },
-  "files": ["extensions/usage-bar.ts", "src/usage.ts", "README.md", "CHANGELOG.md", "LICENSE"],
+  "files": ["extensions/usage-bar.ts", "src/usage.ts", "src/copilot.ts", "README.md", "CHANGELOG.md", "LICENSE"],
   "publishConfig": { "access": "public" },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-tui": "*" },
   "peerDependenciesMeta": {
@@ -14,6 +14,10 @@
     "@earendil-works/pi-tui": { "optional": true }
   },
   "keywords": ["pi-package"],
-  "scripts": { "test": "node --test tests/" },
+  "scripts": {
+    "test": "node --test --import ./tests/pi-stubs.mjs tests/",
+    "typecheck": "tsc --noEmit -p .",
+    "check": "npm run typecheck && npm test"
+  },
   "pi": { "extensions": ["./extensions/usage-bar.ts"] }
 }

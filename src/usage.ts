@@ -4,7 +4,7 @@
 export interface UsageWindow {
 	/** Short label such as "5h" or "7d". */
 	label: string;
-	/** Used share of the window, 0-100. */
+	/** Used percentage of the window; Cursor can report more than 100. */
 	usedPercent: number;
 	/** Reset time in epoch milliseconds, when known. */
 	resetsAt?: number;
@@ -151,6 +151,60 @@ export function chatgptAccountId(token: string): string | undefined {
 	}
 }
 
+// ---- Cursor ----
+
+export function parseCursorUsage(data: unknown): UsageSnapshot {
+	if (!isRecord(data) || !isRecord(data.planUsage)) throw new Error("Unrecognized usage response");
+	const end = data.billingCycleEnd;
+	const resetsAt = finite(typeof end === "string" && /^\d+$/.test(end) ? Number(end) : end);
+	const windows: UsageWindow[] = [];
+	for (const [field, label] of [["autoPercentUsed", "cursor"], ["apiPercentUsed", "other"]] as const) {
+		const value = data.planUsage[field];
+		if (value == null) continue;
+		const usedPercent = finite(value);
+		if (usedPercent === undefined || usedPercent < 0) throw new Error("Unrecognized usage response");
+		windows.push({ label, usedPercent, resetsAt });
+	}
+	if (windows.length === 0) throw new Error("Unrecognized usage response");
+	return { windows };
+}
+
+// ---- GitHub Copilot ----
+
+export interface Quota {
+	entitlement: number;
+	remaining: number;
+	/** Percentage remaining, as reported by GitHub. */
+	percent: number;
+	reset: string;
+	fetchedAt: number;
+}
+
+export function parseCopilotQuota(data: unknown, nowMs: number): { snapshot: UsageSnapshot; quota: Quota } {
+	const q = isRecord(data) && isRecord(data.quota) ? data.quota : undefined;
+	const reset = isRecord(data) ? data.reset : undefined;
+	const entitlement = finite(q?.entitlement);
+	const remaining = finite(q?.remaining);
+	const percent = finite(q?.percent_remaining);
+	const resetsAt = typeof reset === "string" && /^\d{4}-\d{2}-\d{2}$/.test(reset)
+		? Date.parse(`${reset}T00:00:00Z`)
+		: NaN;
+	if (
+		!isRecord(data) || data.plan !== "enterprise" || q?.unlimited !== false ||
+		entitlement === undefined || entitlement <= 0 ||
+		remaining === undefined || remaining < 0 || remaining > entitlement ||
+		percent === undefined || percent < 0 || percent > 100 ||
+		Math.abs((remaining / entitlement) * 100 - percent) > 1 ||
+		typeof reset !== "string" || !Number.isFinite(resetsAt) || new Date(resetsAt).toISOString().slice(0, 10) !== reset
+	) {
+		throw new Error("Unrecognized quota response");
+	}
+	return {
+		snapshot: { plan: "enterprise", windows: [{ label: "premium", usedPercent: 100 - percent, resetsAt }] },
+		quota: { entitlement, remaining, percent, reset, fetchedAt: nowMs },
+	};
+}
+
 // ---- Formatting ----
 
 /** Compact remaining time: "2d 12h", "3h 41m", "41m", or "now". */
@@ -206,7 +260,7 @@ export function fitSegments(
 	return candidates.find((segments) => width(segments) <= maxWidth);
 }
 
-/** Whether any known reset time has passed, meaning the cached numbers are out of date. */
-export function hasElapsedReset(snapshot: UsageSnapshot, nowMs: number): boolean {
-	return snapshot.windows.some((window) => window.resetsAt !== undefined && window.resetsAt <= nowMs);
+/** Whether any known reset has passed since the last completed fetch. */
+export function hasElapsedReset(snapshot: UsageSnapshot, fetchedAtMs: number, nowMs: number): boolean {
+	return snapshot.windows.some(({ resetsAt }) => resetsAt !== undefined && resetsAt > fetchedAtMs && resetsAt <= nowMs);
 }

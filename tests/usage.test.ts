@@ -1,6 +1,7 @@
-// Run: node --test tests/
+// Run: npm test
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { blank, configText, cursor, host, json, LOGIN, oauth, ok, quota, settle, until } from "./fixtures/host.mjs";
 import {
 	buildSegments,
 	chatgptAccountId,
@@ -202,8 +203,167 @@ test("fitSegments drops the plan first, then trailing items", () => {
 	assert.equal(fitSegments(undefined, [], 100), undefined);
 });
 
-test("hasElapsedReset", () => {
-	assert.equal(hasElapsedReset({ windows: [{ label: "5h", usedPercent: 1, resetsAt: NOW - 1 }] }, NOW), true);
-	assert.equal(hasElapsedReset({ windows: [{ label: "5h", usedPercent: 1, resetsAt: NOW + 1 }] }, NOW), false);
-	assert.equal(hasElapsedReset({ windows: [{ label: "5h", usedPercent: 1 }] }, NOW), false);
+test("hasElapsedReset only counts resets after the fetch and no later than now", () => {
+	const fetchedAt = NOW - MIN;
+	const elapsed = (resetsAt?: number) =>
+		hasElapsedReset({ windows: [{ label: "5h", usedPercent: 1, resetsAt }] }, fetchedAt, NOW);
+	assert.equal(elapsed(fetchedAt - 1), false);
+	assert.equal(elapsed(fetchedAt), false);
+	assert.equal(elapsed(fetchedAt + 1), true);
+	assert.equal(elapsed(NOW), true);
+	assert.equal(elapsed(NOW + 1), false);
+	assert.equal(elapsed(), false);
 });
+
+test("a Cursor tick replaces an in-flight request after OAuth rotation", async (t) => {
+	await host(t, { provider: "unknown" }, async (s) => {
+		const old = Promise.withResolvers<{ ok: boolean; json(): Promise<unknown> }>();
+		const fresh = Promise.withResolvers<Response>();
+		let oldBodyRead = false;
+		s.fetch = () => s.requests.length === 1 ? old.promise : fresh.promise;
+		try {
+			await s.start();
+			s.tick(MIN - 1000);
+			await s.select("cursor");
+			await until(() => s.requests.length === 1, "first Cursor request did not start");
+			const firstSignal: AbortSignal = s.requests[0].opts.signal;
+			assert.equal(firstSignal.aborted, false);
+			s.auth = async () => oauth("synthetic-next-token");
+			s.tick(1000);
+			await until(() => s.requests.length === 2, "rotation did not start a new request");
+			assert.equal(firstSignal.aborted, true);
+			const renderCount = s.renders.length;
+			old.resolve({ ok: true, async json() { oldBodyRead = true; return cursor(81); } });
+			await settle();
+			assert.equal(oldBodyRead, false);
+			assert.equal(s.renders.length, renderCount);
+			assert.equal(s.border(), blank());
+			fresh.resolve(json(cursor(29)));
+			await s.waitBorder(/cursor 29%/);
+		} finally {
+			old.resolve({ ok: true, async json() { return cursor(); } });
+			fresh.resolve(json(cursor()));
+		}
+	});
+});
+
+test("Cursor checks its login every idle tick but does not fetch until the fifth tick", async (t) => {
+	await host(t, {}, async (s) => {
+		s.fetch = async () => json(cursor(s.requests.length === 1 ? 31 : 32));
+		await s.start();
+		await s.waitBorder(/cursor 31%/);
+		for (let tick = 1; tick <= 4; tick++) {
+			s.tick(MIN);
+			await settle();
+			assert.equal(s.lookups.length, tick + 1);
+			assert.equal(s.requests.length, 1);
+		}
+		s.tick(MIN);
+		await s.waitBorder(/cursor 32%/);
+		assert.equal(s.lookups.length, 6);
+		assert.equal(s.requests.length, 2);
+	});
+});
+
+test("Cursor does not refresh early when its response contains a past reset", async (t) => {
+	await host(t, {}, async (s) => {
+		s.fetch = async () => json(cursor(31, null, "0"));
+		await s.start();
+		await s.waitBorder(/cursor 31% \(now\)/);
+		for (let tick = 1; tick <= 4; tick++) {
+			s.tick(MIN);
+			await settle();
+			assert.equal(s.requests.length, 1);
+		}
+	});
+});
+
+for (const { name, reset, expectedCalls } of [
+	{ name: "does not refresh early for a past reset", reset: "2026-11-24", expectedCalls: [3, 3, 3, 3] },
+	{ name: "refreshes once for a reset that passes after the fetch", reset: "2026-11-26", expectedCalls: [3, 6, 6, 6] },
+]) {
+	test(`Copilot ${name}`, async (t) => {
+		const options = {
+			provider: "github-copilot", config: configText(LOGIN), now: Date.parse("2026-11-25T23:58:00Z"),
+		};
+		await host(t, options, async (s) => {
+			s.exec = async ({ endpoint }: { endpoint: string }) =>
+				endpoint === "user" ? ok(LOGIN) : ok(JSON.stringify({ ...quota(), reset }));
+			await s.start();
+			await s.waitBorder(/premium 20%/);
+			assert.equal(s.calls.length, 3);
+			for (const count of expectedCalls) {
+				s.tick(MIN);
+				await settle();
+				assert.equal(s.calls.length, count);
+			}
+		});
+	});
+}
+
+test("explicit Copilot setup keeps its prompt and saves through a model switch", async (t) => {
+	const options = { provider: "unknown", config: configText("prior-synthetic-login") };
+	await host(t, options, async (s) => {
+		s.fetch = async () => json({ five_hour: { utilization: 5 } });
+		await s.start();
+		const command = s.command("setup");
+		try {
+			const prompt = await s.waitPrompt();
+			await s.select("anthropic");
+			await s.waitBorder(/5h 5%/);
+			assert.equal(prompt.options.signal.aborted, false);
+			prompt.answer(LOGIN);
+			await command;
+			assert.equal(s.notices.at(-1)?.level, "info");
+			assert.match(s.border(), /5h 5%/);
+			await s.select("github-copilot");
+			await s.waitBorder(/premium 20%/);
+		} finally {
+			for (const prompt of s.prompts) prompt.answer(undefined);
+			await command;
+		}
+	});
+});
+
+test("explicit Copilot refresh reuses a current attempt and keeps it live across a switch", async (t) => {
+	const options = { provider: "github-copilot", config: configText(LOGIN) };
+	await host(t, options, async (s) => {
+		const pending = Promise.withResolvers<ReturnType<typeof ok>>();
+		s.exec = async ({ endpoint }: { endpoint: string }) => endpoint === "user" ? ok(LOGIN) : pending.promise;
+		await s.start();
+		await until(() => s.calls.length === 2, "automatic quota lookup did not start");
+		const command = s.command();
+		try {
+			await s.select("unknown");
+			pending.resolve(ok(JSON.stringify(quota())));
+			await command;
+			assert.equal(s.calls.length, 3);
+			assert.match(s.notices.at(-1)?.text ?? "", /Used: 20/);
+			assert.equal(s.border(), blank());
+		} finally {
+			pending.resolve(ok(JSON.stringify(quota())));
+			await command;
+		}
+	});
+});
+
+for (const provider of ["anthropic", "openai-codex"]) {
+	test(`${provider} does not send a credential resolved after a provider switch`, async (t) => {
+		await host(t, { provider }, async (s) => {
+			const auth = Promise.withResolvers<ReturnType<typeof oauth>>();
+			s.auth = () => auth.promise;
+			try {
+				await s.start();
+				await until(() => s.lookups.length === 1, "credential lookup did not start");
+				await s.select("unknown");
+				const renderCount = s.renders.length;
+				auth.resolve(oauth());
+				await settle();
+				assert.deepEqual(s.requests, []);
+				assert.equal(s.renders.length, renderCount);
+			} finally {
+				auth.resolve(oauth());
+			}
+		});
+	});
+}
