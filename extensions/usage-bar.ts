@@ -122,6 +122,24 @@ async function fetchCodex(token: string, live: () => boolean): Promise<UsageSnap
 	return { ...snapshot, resets: mergeResets(snapshot.resets, list) };
 }
 
+/** Use the unverified JWT subject only as a local cache key, never to authorize requests. */
+function cursorAccountDigest(token: string): string {
+	let identity = token;
+	const parts = token.split(".");
+	if (parts.length === 3 && parts[1]) {
+		try {
+			const payload: unknown = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+			if (typeof payload === "object" && payload !== null && Object.hasOwn(payload, "sub")) {
+				const { sub } = payload as { sub: unknown };
+				if (typeof sub === "string" && sub) identity = sub;
+			}
+		} catch {
+			// Without a usable claim, compare whole tokens.
+		}
+	}
+	return createHash("sha256").update(identity).digest("hex");
+}
+
 async function fetchCursor(token: string, controller: AbortController, live: () => boolean): Promise<UsageSnapshot | undefined> {
 	const { signal } = controller;
 	const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -186,22 +204,22 @@ export default function usageStatus(pi: ExtensionAPI): void {
 		return entry;
 	}
 
-	function advanceGeneration(keepPrompt = false): void {
+	function advanceGeneration(): void {
 		generation++;
 		for (const entry of cache.values()) {
 			if (!entry.inFlight?.explicit || stopped) discard(entry);
 		}
 		if (cursorCheck?.due) entryFor("cursor").discarded = true;
 		cursorCheck = undefined;
-		if (!keepPrompt) copilot.abortPrompt(stopped);
+		copilot.abortPrompt(stopped);
 	}
 
-	function liveness(explicit: boolean): () => boolean {
+	function liveness(provider: Provider, explicit: boolean): () => boolean {
 		const startedIn = generation;
 		const shutdown = shutdownGeneration;
 		const account = accountGeneration;
-		return () => !stopped && shutdown === shutdownGeneration && account === accountGeneration &&
-			(explicit || startedIn === generation);
+		return () => !stopped && shutdown === shutdownGeneration &&
+			(provider !== "github-copilot" || account === accountGeneration) && (explicit || startedIn === generation);
 	}
 
 	function refresh(
@@ -217,8 +235,8 @@ export default function usageStatus(pi: ExtensionAPI): void {
 			return entry.inFlight.promise;
 		}
 		if (!force && !isDue(entry, MIN_REFRESH_MS)) return Promise.resolve();
-		const automaticLive = liveness(false);
-		const explicitLive = liveness(true);
+		const automaticLive = liveness(provider, false);
+		const explicitLive = liveness(provider, true);
 		const controller = provider === "cursor" ? new AbortController() : undefined;
 		const live = () => entry.inFlight === work && (work.explicit ? explicitLive() : automaticLive());
 		const promise = Promise.resolve().then(async () => {
@@ -282,20 +300,27 @@ export default function usageStatus(pi: ExtensionAPI): void {
 		}
 		const check = { due: due || !!cursorCheck?.due, force: force || !!cursorCheck?.force };
 		cursorCheck = check;
-		const live = liveness(false);
+		const live = liveness("cursor", false);
 		let token: string | undefined;
+		let lookupFailed = false;
 		try {
 			const auth = await ctx.modelRegistry.getProviderAuth("cursor");
 			if (auth?.source === "OAuth" && typeof auth.auth?.apiKey === "string") token = auth.auth.apiKey;
 		} catch {
-			// An unverified credential cannot show or refresh a cached value.
+			lookupFailed = true;
 		}
 		if (!live() || cursorCheck !== check) return;
 		cursorCheck = undefined;
-		if (!usesOAuth(ctx, activeModel)) token = undefined;
-		const digest = token ? createHash("sha256").update(token).digest("hex") : undefined;
 		const hadValue = !!entry.value || entry.failed;
 		const wasAllowed = cursorAllowed;
+		if (lookupFailed) {
+			// A failed lookup cannot confirm the login, but it does not prove a change.
+			cursorAllowed = false;
+			if (hadValue && wasAllowed) requestRender?.();
+			return;
+		}
+		if (!usesOAuth(ctx, activeModel)) token = undefined;
+		const digest = token ? cursorAccountDigest(token) : undefined;
 		cursorAllowed = digest !== undefined;
 		if (digest !== entry.cursorDigest || !digest) {
 			discard(entry);
@@ -315,18 +340,19 @@ export default function usageStatus(pi: ExtensionAPI): void {
 	}
 
 	async function setupCopilot(ctx: ExtensionContext, explicit: boolean): Promise<void> {
-		await copilot.setup(ctx.ui, explicit, liveness(explicit), async (valid, changed) => {
+		await copilot.setup(ctx.ui, explicit, liveness("github-copilot", explicit), async (valid, changed) => {
 			const entry = entryFor("github-copilot");
-			if (changed) {
+			if (valid || changed) {
 				accountGeneration++;
 				discard(entry);
+			}
+			if (changed) {
 				entry.value = undefined;
 				entry.failed = false;
 				entry.problem = undefined;
 				entry.fetchedAt = undefined;
 			}
-			if (valid || changed) advanceGeneration(true);
-			const live = liveness(explicit);
+			const live = liveness("github-copilot", explicit);
 			if (!valid) entry.problem = "config missing or invalid";
 			if ((changed || !valid) && activeProvider === "github-copilot") requestRender?.();
 			if (valid && live()) {
@@ -515,7 +541,7 @@ export default function usageStatus(pi: ExtensionAPI): void {
 				ctx.ui.notify("Usage: /copilot-credits [setup]", "warning");
 				return;
 			}
-			const live = liveness(true);
+			const live = liveness("github-copilot", true);
 			await refresh(ctx, "github-copilot", { force: true, explicit: true });
 			if (!live()) return;
 			const { problem, value } = entryFor("github-copilot");

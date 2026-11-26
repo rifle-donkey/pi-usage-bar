@@ -20,8 +20,8 @@ GitHub account: rifle-donkey
 ## What the code doesn't make obvious
 
 - The usage endpoints are undocumented. Validate fields in `src/usage.ts`. Never log or display config content, tokens, logins, raw responses or command errors.
-- OAuth tokens come from Pi's model registry; never read `auth.json` directly. Send Cursor only a verified OAuth token and refuse redirects. Keep only its SHA-256 digest in the usage cache.
-- Invalidate automatic work on session or provider changes and successful Copilot setup. Explicit Copilot work survives provider switches, not shutdown or account changes. Invalidated work never moves the cooldown or renders.
+- OAuth tokens come from Pi's model registry; never read `auth.json` directly. Send Cursor only a verified OAuth token and refuse redirects. Keep only a SHA-256 digest of the JWT subject (or whole token as fallback) in the usage cache. Never use the subject to authorize a request.
+- Invalidate automatic work on session or provider changes. Copilot setup invalidates only Copilot work, including explicit requests. Explicit Copilot work survives provider switches, not shutdown or account changes. Invalidated work never moves the cooldown or renders.
 - The expected Copilot account comes only from `.config/copilot-credits.json` or the user's setup answer. Share one config load per instance. `configLocation` is the only resolver; fail closed on unsupported paths and without `O_NOFOLLOW`.
 - Reads distinguish missing from invalid config and reject final-path symlinks. Publish an exclusive, complete `0600` file in the same directory. Link on first activation, rename over regular files for explicit setup, and clean up on failure.
 - Allow one Copilot prompt at a time. Automatically prompt only once, on Copilot activation with missing config. Fence setup after each await; abort input on shutdown and automatic input on provider switches.

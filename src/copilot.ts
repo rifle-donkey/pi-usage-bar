@@ -266,7 +266,7 @@ export function createCopilot(exec: Exec) {
 	}
 
 	// The host invalidates old work on adoption. The callback reports whether the new work
-	// is still live after the refresh, since setup itself can advance the generation.
+	// is still live after the refresh, since setup itself can advance the account generation.
 	async function setup(
 		ui: CopilotUI, replace: boolean, stillLive: () => boolean,
 		adopt: (valid: boolean, changed: boolean) => Promise<boolean>,

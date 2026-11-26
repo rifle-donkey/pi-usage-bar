@@ -40,7 +40,7 @@ The border shows used percentages and known reset countdowns. Copilot counts dow
 
 If a refresh fails, the border marks a previous value `stale` or shows `usage unavailable` if there is no value. When space is tight, Cursor and Copilot keep `stale` even if no usage fits.
 
-A Cursor account change or a Pi token refresh for the Cursor login clears the old value and refreshes usage with the new OAuth token. The extension detects either change within one minute while Cursor is active. A Copilot account change or mismatch also clears the old value.
+A Cursor account change clears the old value and refreshes usage. A token refresh for the same account keeps the value if the token identifies the account. If it does not, a token change clears the value. The extension checks the login within one minute while Cursor is active. If Pi cannot check the login, the border hides the value until the login is confirmed. A Copilot account change or mismatch also clears the old value.
 
 These usage endpoints are read-only and undocumented. If the displayed usage differs from your provider's settings, use the provider's settings. Other GitHub limits, such as a user budget or shared pool, can block usage before the displayed quota runs out.
 
